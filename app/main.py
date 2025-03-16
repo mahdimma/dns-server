@@ -1,4 +1,42 @@
 import socket
+from enum import Flag, Enum
+
+
+class HeaderFlags(Flag):
+    QR = 0x8000
+    OPCODE = 0x7800
+    AA = 0x0400
+    TC = 0x0200
+    RD = 0x0100
+    RA = 0x0080
+    Z = 0x0070
+    RCODE = 0x000F
+
+
+class QuestionTypeEnum(Enum):
+    A = 1
+    NS = 2
+    MD = 3
+    MF = 4
+    CNAME = 5
+    SOA = 6
+    MB = 7
+    MG = 8
+    MR = 9
+    NULL = 10
+    WKS = 11
+    PTR = 12
+    HINFO = 13
+    MINFO = 14
+    MX = 15
+    TXT = 16
+
+
+class QuestionClassEnum(Enum):
+    IN = 1
+    CS = 2
+    CH = 3
+    HS = 4
 
 
 class Header:
@@ -19,44 +57,16 @@ class Header:
         self.nscount = int.from_bytes(buf[8:10], byteorder="big")
         self.arcount = int.from_bytes(buf[10:12], byteorder="big")
 
-    def change_header(
-        self,
-        qr: int = None,
-        OPCODE: int = None,
-        AA: int = None,
-        TC: int = None,
-        RD: int = None,
-        RA: int = None,
-        Z: int = None,
-        RCODE: int = None,
-    ) -> None:
-        if qr is not None:
-            self.qr = qr
-        if OPCODE is not None:
-            self.OPCODE = OPCODE
-        if AA is not None:
-            self.AA = AA
-        if TC is not None:
-            self.TC = TC
-        if RD is not None:
-            self.RD = RD
-        if RA is not None:
-            self.RA = RA
-        if Z is not None:
-            self.Z = Z
-        if RCODE is not None:
-            self.RCODE = RCODE
-
-        self.flags = (
-            (self.qr << 15)
-            | (self.OPCODE << 11)
-            | (self.AA << 10)
-            | (self.TC << 9)
-            | (self.RD << 8)
-            | (self.RA << 7)
-            | (self.Z << 4)
-            | self.RCODE
-        )
+    def change_header(self, flag: HeaderFlags) -> None:
+        self.flags = flag.value
+        self.qr = self.flags & 0x8000
+        self.OPCODE = self.flags & 0x7800
+        self.AA = self.flags & 0x0400
+        self.TC = self.flags & 0x0200
+        self.RD = self.flags & 0x0100
+        self.RA = self.flags & 0x0080
+        self.Z = self.flags & 0x0070
+        self.RCODE = self.flags & 0x000F
 
     def toByte(self) -> bytes:
         id_bytes = self.id.to_bytes(2, byteorder="big")
@@ -74,15 +84,54 @@ class Header:
             + arcount_bytes
         )
 
+    def __repr__(self):
+        return (
+            f"Header(id={self.id}, flags={self.flags}, qr={self.qr}, OPCODE={self.OPCODE}, "
+            f"AA={self.AA}, TC={self.TC}, RD={self.RD}, RA={self.RA}, Z={self.Z}, RCODE={self.RCODE}, "
+            f"qdcount={self.qdcount}, ancount={self.ancount}, nscount={self.nscount}, arcount={self.arcount})"
+        )
 
-class Question:
-    def __init__(self, buf: bytes):
-        self.qname = buf[0:2]
-        self.qtype = buf[2:4]
-        self.qclass = buf[4:6]
-        print(self.qname)
-        print(self.qtype)
-        print(self.qclass)
+
+class Questions:
+    class Question:
+        def __init__(self, buf: bytes):
+            self.qname: list[str] = []
+            self.bqname: list[bytes] = []
+            self.bqnamecomplete: bytes = b""
+            self.qtype: QuestionTypeEnum = None
+            self.qclass: QuestionClassEnum = None
+            self.buf = buf
+            i = 0
+            while True:
+                length = buf[i]
+                if length == 0:
+                    i += 1
+                    break
+                self.bqname.append(buf[i + 1 : i + 1 + length])
+                self.qname.append(buf[i + 1 : i + 1 + length].decode("utf-8"))
+                i += length + 1
+            self.bqnamecomplete = buf[:i]
+            self.qtype = QuestionTypeEnum(int.from_bytes(buf[i : i + 2]))
+            self.qclass = QuestionClassEnum(int.from_bytes(buf[i + 2 :]))
+
+        def __repr__(self):
+            return (
+            f"Question(qname={self.qname}, bqname={self.bqname}, "
+            f"bqnamecomplete={self.bqnamecomplete}, qtype={self.qtype}, qclass={self.qclass})"
+            )
+
+    def __init__(self, buf: bytes, qdcount: int):
+        self.buf = buf
+        self.questions = []
+        for i in range(qdcount):
+            offset = self.buf.find(b"\x00") + 5
+            question = self.buf[:offset]
+            self.questions.append(Questions.Question(question))
+            self.buf = self.buf[offset:]
+        self.buf = buf  # reset buf
+
+    def __repr__(self):
+        return f"Questions(questions={self.questions})"
 
 
 class AnswerSection:
@@ -137,7 +186,7 @@ class Packet:
     def __init__(self, buf: bytes):
         self.buf = buf
         self.header = Header(buf[0:12])
-        # self.question = Question(buf[12:24])
+        self.questions = Questions(self.buf[12:], self.header.qdcount)
         # self.answer_section = AnswerSection(buf[24:36])
         # self.authority_section = AuthoritySection(buf[36:48])
         # self.additional_section = AdditionalSection(buf[48:60])
@@ -145,6 +194,9 @@ class Packet:
     def toByte(self) -> bytes:
         self.buf = self.header.toByte() + self.buf[12:]
         return self.buf
+
+    def __repr__(self):
+        return f"Packet(header={self.header}, questions={self.questions})"
 
 
 def main():
@@ -157,11 +209,10 @@ def main():
     while True:
         try:
             buf, source = udp_socket.recvfrom(512)
-
+            print(f"{buf[:12]}\nother{buf[12:]}")
             packet = Packet(buf=buf)
-            packet.header.change_header(
-                qr=1, OPCODE=0, AA=0, TC=0, RD=0, RA=0, Z=0, RCODE=0
-            )
+            print(packet)
+            packet.header.change_header(HeaderFlags.QR)
             response: bytes = packet.toByte()
             udp_socket.sendto(response, source)
         except Exception as e:
