@@ -113,25 +113,60 @@ class Packet:
 
     class Questions:
         class Question:
-            def __init__(self, buf: bytes):
+            def __init__(
+                self,
+                buf: bytes,
+                labels: dict,
+                start: int,
+                end: int = None,
+                first: bool = True,
+            ):
                 self.qname: list[str] = []
                 self.bqname: list[bytes] = []
                 self.bqnamecomplete: bytes = b""
                 self.qtype: Packet.PacketType = None
                 self.qclass: Packet.PacketClass = None
                 self.buf = buf
-                i = 0
-                while True:
-                    length = buf[i]
-                    if length == 0:
-                        i += 1
-                        break
-                    self.bqname.append(buf[i + 1 : i + 1 + length])
-                    self.qname.append(buf[i + 1 : i + 1 + length].decode("utf-8"))
-                    i += length + 1
-                self.bqnamecomplete = buf[:i]
-                self.qtype = Packet.PacketType(int.from_bytes(buf[i : i + 2]))
-                self.qclass = Packet.PacketClass(int.from_bytes(buf[i + 2 :]))
+                i = start
+                if first:
+                    while True:
+                        length = buf[i]
+                        if length == 0:
+                            i += 1
+                            break
+                        self.bqname.append(buf[i + 1 : i + 1 + length])
+                        self.qname.append(buf[i + 1 : i + 1 + length].decode("utf-8"))
+                        i += length + 1
+                    self.bqnamecomplete = buf[start:i]
+                    print(self.bqnamecomplete)
+                    self.qtype = Packet.PacketType(int.from_bytes(buf[i : i + 2]))
+                    self.qclass = Packet.PacketClass(
+                        int.from_bytes(buf[i + 2 : end + 1])
+                    )
+                else:
+                    while True:
+                        signer = int(buf[i])
+                        print(f"buf bef sign: {i}, {buf[i]} C0?")
+
+                        if signer >= 192:
+                            print(f"buf: {i}, {buf[i]} C0?")
+                            offset = int.from_bytes(buf[i : i + 2], "big") - 49152
+                            bqname, qname, bqnamecomplete = self.parse(buf[offset:])
+                            self.bqname += bqname
+                            self.qname += qname
+                            self.bqnamecomplete += bqnamecomplete
+                            i += 2
+                            break
+                        elif signer == 0:
+                            i += 1
+                            break
+                        self.bqname.append(buf[i + 1 : i + 1 + signer])
+                        self.qname.append(buf[i + 1 : i + 1 + signer].decode("utf-8"))
+                        i += signer + 1
+                    self.bqnamecomplete = buf[start:i]
+                    self.qtype = Packet.PacketType(int.from_bytes(buf[i : i + 2]))
+                    self.qclass = Packet.PacketClass(int.from_bytes(buf[i + 2 : i + 4]))
+                self.i = i
 
             def __repr__(self):
                 return (
@@ -139,18 +174,40 @@ class Packet:
                     f"bqnamecomplete={self.bqnamecomplete}, qtype={self.qtype}, qclass={self.qclass})"
                 )
 
+            def parse(self, buf) -> tuple[list[bytes], list[str], bytes]:
+                i = 0
+                bqname = []
+                qname = []
+                while True:
+                    length = buf[i]
+                    if length == 0:
+                        break
+                    elif length >= 192:
+                        break
+                    bqname.append(buf[i + 1 : i + 1 + length])
+                    qname.append(buf[i + 1 : i + 1 + length].decode("utf-8"))
+                    i += length + 1
+                bqnamecomplete = buf[:i]
+                print(f"parser: {bqname, qname, bqnamecomplete}")
+                return bqname, qname, bqnamecomplete
+
         def __init__(self, buf: bytes, qdcount: int):
             self.buf = buf
             self.questions = []
-            self.length = 0
-            for i in range(qdcount):
-                offset = self.buf.find(b"\x00", self.length) + 5
-                question = self.buf[
-                    self.length : offset
-                ]  # length work like preOffset and in end set to full length
-                self.questions.append(self.Question(question))
-                self.length = offset
-                print(self.length)
+            self.labels = {}
+            self.length = 12
+            offset = self.buf.find(b"\x00", self.length) + 5
+            self.questions.append(
+                self.Question(self.buf, self.labels, start=self.length, end=offset - 1)
+            )
+            self.length = offset
+            print(f"len....{self.length}")
+            for i in range(qdcount - 1):
+                self.questions.append(
+                    self.Question(self.buf, self.labels, self.length, first=False)
+                )
+                self.length = self.questions[-1].i + 5
+                print("packet Q: ", i, self.length)
 
         def __repr__(self):
             return f"Questions(questions={self.questions})"
@@ -242,7 +299,7 @@ class Packet:
         self.buf = buf
         self.header = self.Header(buf[0:12])
         self.header.ancount = self.header.qdcount
-        self.questions = self.Questions(self.buf[12:], self.header.qdcount)
+        self.questions = self.Questions(self.buf, self.header.qdcount)
         self.answer_section = None
         # self.authority_section = AuthoritySection(buf[36:48])
         # self.additional_section = AdditionalSection(buf[48:60])
@@ -254,9 +311,9 @@ class Packet:
         )
         return (
             self.header.toByte()
-            + self.buf[12 : 12 + self.questions.length]
+            + self.buf[12 : self.questions.length]
             + self.answer_section.toByets()
-            + self.buf[12 + self.questions.length :]
+            + self.buf[self.questions.length :]
         )
 
     def response(self):
