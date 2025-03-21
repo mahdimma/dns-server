@@ -263,9 +263,28 @@ class Packet:
         self.answer_section = self.AnswerSection(
             self.questions.questions, self.header.ancount
         )
-        self.header.change_header(self.header.HeaderFlags.QR)
+        if self.header.OPCODE == 0:
+            if self.header.RD == 1:
+                self.header.change_header(
+                    self.header.HeaderFlags.QR | self.header.HeaderFlags.RD
+                )
+            else:
+                self.header.change_header(self.header.HeaderFlags.QR)
+        else:
+            if self.header.RD == 1:
+                self.header.change_header(
+                    self.header.HeaderFlags.QR | self.header.HeaderFlags.RD,
+                    opcode=self.header.OPCODE,
+                    rcode=4,
+                )
+            else:
+                self.header.change_header(
+                    self.header.HeaderFlags.QR,
+                    opcode=self.header.OPCODE,
+                    rcode=4,
+                )
+
         return self
-        pass
 
     def __repr__(self):
         return f"Packet(header={self.header}, questions={self.questions}, answer={self.answer_section})"
