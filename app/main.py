@@ -20,6 +20,7 @@ class DNSResponse:
 
         def __init__(self, data: bytes):
             self.data = data
+            self.parse()
 
         def parse(self):
             # Implement packet parsing logic here
@@ -83,16 +84,16 @@ class DNSResponse:
                     label_length = data[offset]
                     offset += 1 + label_length  # skip length byte and the label
                 if data[offset] == 0:
-                    # Skip TYPE, CLASS, TTL (8 bytes), and RDLENGTH (2 bytes)
-                    offset += 10
+                    # Skip TYPE, CLASS, TTL (8 bytes), and RDLENGTH (2 bytes) and zero(end of labels)
+                    offset += 11
                     rdlength = struct.unpack("!H", data[offset - 2 : offset])[0]
                     # Extract RDATA
                     offset += rdlength
                     answers.append(data[start:offset])
                 else:
                     pOffset = offset  # offset of pointer
-                    # Skip TYPE, CLASS, TTL (8 bytes), and RDLENGTH (2 bytes)
-                    offset += 11
+                    # Skip TYPE, CLASS, TTL (8 bytes), and RDLENGTH (2 bytes) and pointer_offset
+                    offset += 12
                     rdlength = struct.unpack("!H", data[offset - 2 : offset])[0]
                     # Extract RDATA
                     offset += rdlength
@@ -181,19 +182,44 @@ class DNSResponse:
                 f"questions={self.questions} answers={self.answers}>"
             )
 
+        def __str__(self):
+            """
+            Return a human-readable string representation of the DNS packet.
+            """
+            flags = [flag.name for flag in self.HeaderFlag if self.flags & flag.value]
+            questions_str = "\n".join(
+                [f"Question {i + 1}: {q}" for i, q in enumerate(self.questions)]
+            )
+            answers_str = "\n".join(
+                [f"Answer {i + 1}: {a}" for i, a in enumerate(self.answers)]
+            )
+            return (
+                f"DNS Packet:\n"
+                f"ID: {self.id}\n"
+                f"Flags: {', '.join(flags)}\n"
+                f"Questions Count: {self.qdcount}\n"
+                f"Answers Count: {self.ancount}\n"
+                f"Name Servers Count: {self.nscount}\n"
+                f"Additional Records Count: {self.arcount}\n"
+                f"Questions:\n{questions_str}\n"
+                f"Answers:\n{answers_str}"
+            )
+
     def __init__(self, data: bytes):
         self.data = data
         self.packet = self.Packet(data)
 
     def process_response(self, address=None, port=None):
+        print(self.packet)
         if address and port:
-            return self.forwardQuery(address=address, port=port)
+            response = self.forwardQuery(address=address, port=port)
         else:
-            return self.process_response_locally()
+            response = self.process_response_locally()
+        print(self.Packet(response))
+        return response
 
     def process_response_locally(self):
         # Implement response processing logic here
-        self.packet.parse()
         if (self.packet.flags >> 11) == 0:
             self.packet.changeHeaderFlags(
                 self.Packet.HeaderFlag(
@@ -219,7 +245,6 @@ class DNSResponse:
         Forward the DNS query to the specified address and port for each question
         and merge the responses.
         """
-        self.packet.parse()
         for question in self.packet.questions:
             with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                 header = struct.pack(
@@ -275,17 +300,17 @@ def main():
     udp_socket.bind(("127.0.0.1", 2053))
 
     while True:
-        try:
-            print("Starting DNS server...")
-            buf, source = udp_socket.recvfrom(512)
-            if address:
-                response = DNSResponse(buf).process_response(address=address, port=port)
-            else:
-                response = DNSResponse(buf).process_response()
-            udp_socket.sendto(response, source)
-        except Exception as e:
-            print(f"Error receiving data: {e}")
-            break
+        # try:
+        print("Starting DNS server...")
+        buf, source = udp_socket.recvfrom(512)
+        if address:
+            response = DNSResponse(buf).process_response(address=address, port=port)
+        else:
+            response = DNSResponse(buf).process_response()
+        udp_socket.sendto(response, source)
+    # except Exception as e:
+    #     print(f"Error receiving data: {e}")
+    #     break
 
 
 if __name__ == "__main__":
