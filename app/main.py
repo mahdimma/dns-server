@@ -3,9 +3,9 @@ import socket
 import struct
 from enum import Flag
 import logging
+import threading
 
 DNS_HEADER_SIZE = 12
-
 
 # Configure logging
 logging.basicConfig(
@@ -341,6 +341,18 @@ class DNSResponse:
         return self.packet.toBytes()
 
 
+def handleRequest(buf, source, udp_socket: socket.socket):
+    address = port = None
+    if len(sys.argv) == 3:
+        address, port = sys.argv[2].split(":")
+        port = int(port)
+    if address:
+        response = DNSResponse(buf).process_response(address=address, port=port)
+    else:
+        response = DNSResponse(buf).process_response()
+    udp_socket.sendto(response, source)
+
+
 def main():
     address = port = None
     if len(sys.argv) == 3:
@@ -357,11 +369,9 @@ def main():
         try:
             logging.info("Starting DNS server...")
             buf, source = udp_socket.recvfrom(512)
-            if address:
-                response = DNSResponse(buf).process_response(address=address, port=port)
-            else:
-                response = DNSResponse(buf).process_response()
-            udp_socket.sendto(response, source)
+            threading.Thread(
+                target=handleRequest, args=(buf, source, udp_socket)
+            ).start()
         except Exception as e:
             logging.error(f"Error receiving data: {e}")
 
