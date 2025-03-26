@@ -2,8 +2,18 @@ import sys
 import socket
 import struct
 from enum import Flag
+import logging
 
 DNS_HEADER_SIZE = 12
+
+
+# Configure logging
+logging.basicConfig(
+    level=logging.DEBUG, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logging.basicConfig(
+    level=logging.ERROR, format="%(asctime)s - %(levelname)s - %(message)s"
+)
 
 
 class DNSResponse:
@@ -184,38 +194,82 @@ class DNSResponse:
 
         def __str__(self):
             """
-            Return a human-readable string representation of the DNS packet.
+            Return a human-readable string representation of the DNS packet with ASCII colorized output.
             """
+
+            class Color:
+                HEADER = "\033[96m"
+                QUESTION = "\033[93m"
+                ANSWER = "\033[92m"
+                END = "\033[0m"
+
             flags = [flag.name for flag in self.HeaderFlag if self.flags & flag.value]
             questions_str = "\n".join(
-                [f"Question {i + 1}: {q}" for i, q in enumerate(self.questions)]
+                [
+                    f"{Color.QUESTION}Question {i + 1}:{Color.END} {self.format_question(q)}"
+                    for i, q in enumerate(self.questions)
+                ]
             )
             answers_str = "\n".join(
-                [f"Answer {i + 1}: {a}" for i, a in enumerate(self.answers)]
+                [
+                    f"{Color.ANSWER}Answer {i + 1}:{Color.END} {self.format_answer(a)}"
+                    for i, a in enumerate(self.answers)
+                ]
             )
             return (
-                f"DNS Packet:\n"
-                f"ID: {self.id}\n"
-                f"Flags: {', '.join(flags)}\n"
-                f"Questions Count: {self.qdcount}\n"
-                f"Answers Count: {self.ancount}\n"
-                f"Name Servers Count: {self.nscount}\n"
-                f"Additional Records Count: {self.arcount}\n"
-                f"Questions:\n{questions_str}\n"
-                f"Answers:\n{answers_str}"
+                f"{Color.HEADER}DNS Packet:{Color.END}\n"
+                f"{Color.HEADER}ID:{Color.END} {self.id}\n"
+                f"{Color.HEADER}Flags:{Color.END} {', '.join(flags)}\n"
+                f"{Color.HEADER}Questions Count:{Color.END} {self.qdcount}\n"
+                f"{Color.HEADER}Answers Count:{Color.END} {self.ancount}\n"
+                f"{Color.HEADER}Name Servers Count:{Color.END} {self.nscount}\n"
+                f"{Color.HEADER}Additional Records Count:{Color.END} {self.arcount}\n"
+                f"{Color.HEADER}Questions:{Color.END}\n{questions_str}\n"
+                f"{Color.HEADER}Answers:{Color.END}\n{answers_str}"
             )
+
+        def format_question(self, question):
+            """
+            Format a DNS question for readability.
+            """
+            qname_parts = []
+            offset = 0
+            while question[offset] != 0:
+                length = question[offset]
+                qname_parts.append(question[offset + 1 : offset + 1 + length].decode())
+                offset += length + 1
+            qname = ".".join(qname_parts)
+            qtype, qclass = struct.unpack("!HH", question[offset + 1 : offset + 5])
+            return f"QNAME: {qname}, QTYPE: {qtype}, QCLASS: {qclass}"
+
+        def format_answer(self, answer):
+            """
+            Format a DNS answer for readability.
+            """
+            name_parts = []
+            offset = 0
+            while answer[offset] != 0:
+                length = answer[offset]
+                name_parts.append(answer[offset + 1 : offset + 1 + length].decode())
+                offset += length + 1
+            name = ".".join(name_parts)
+            type_, class_, ttl, rdlength = struct.unpack(
+                "!HHIH", answer[offset + 1 : offset + 11]
+            )
+            rdata = answer[offset + 11 : offset + 11 + rdlength]
+            return f"NAME: {name}, TYPE: {type_}, CLASS: {class_}, TTL: {ttl}, RDLENGTH: {rdlength}, RDATA: {rdata}"
 
     def __init__(self, data: bytes):
         self.data = data
         self.packet = self.Packet(data)
 
     def process_response(self, address=None, port=None):
-        print(self.packet)
+        logging.info(f"request: {self.packet}")
         if address and port:
             response = self.forwardQuery(address=address, port=port)
         else:
             response = self.process_response_locally()
-        print(self.Packet(response))
+        logging.info(f"response: {self.Packet(response)}")
         return response
 
     def process_response_locally(self):
@@ -267,7 +321,7 @@ class DNSResponse:
                         self.packet.answers.extend(response_packet.answers)
                         self.packet.ancount += response_packet.ancount
                 except socket.timeout:
-                    print("Request timed out for question:", question)
+                    logging.error("Request timed out for question:", question)
         if (self.packet.flags >> 11) == 0:
             self.packet.changeHeaderFlags(
                 self.Packet.HeaderFlag(
@@ -293,24 +347,23 @@ def main():
         address, port = sys.argv[2].split(":")
         port = int(port)
     if address and port:
-        print(f"Forwarding DNS queries to {address}:{port}")
-    print("Logs from your program will appear here!")
+        logging.info(f"Forwarding DNS queries to {address}:{port}")
+    logging.info("Logs from your program will appear here!")
 
     udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     udp_socket.bind(("127.0.0.1", 2053))
 
     while True:
-        # try:
-        print("Starting DNS server...")
-        buf, source = udp_socket.recvfrom(512)
-        if address:
-            response = DNSResponse(buf).process_response(address=address, port=port)
-        else:
-            response = DNSResponse(buf).process_response()
-        udp_socket.sendto(response, source)
-    # except Exception as e:
-    #     print(f"Error receiving data: {e}")
-    #     break
+        try:
+            logging.info("Starting DNS server...")
+            buf, source = udp_socket.recvfrom(512)
+            if address:
+                response = DNSResponse(buf).process_response(address=address, port=port)
+            else:
+                response = DNSResponse(buf).process_response()
+            udp_socket.sendto(response, source)
+        except Exception as e:
+            logging.error(f"Error receiving data: {e}")
 
 
 if __name__ == "__main__":
